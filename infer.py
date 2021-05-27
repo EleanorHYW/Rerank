@@ -15,6 +15,7 @@ parser.add_argument('--n_lstms', type=int, default=2, help='Number of LSTM layer
 parser.add_argument('--dropout', type=float, default=0., help='Dropout value')
 parser.add_argument('--bidir', default=False, action='store_true', help='Bidirectional')
 parser.add_argument('--batch_size', default=256, type=int, help='Batch size')
+parser.add_argument('--history_len', default=5, type=int, help='history sequence length')
 
 parser.add_argument('--n_test', type=int, default=200, help='Number of  dataset')
 # parser.add_argument('--output_dir', type=str, default="./output", help='')
@@ -34,11 +35,12 @@ def greedy_infer(model, test_input, search='greedy', beam_width=5):
     model.eval()
     with torch.no_grad():
         for i in range(len(test_input)):
-            print(i, flush=True)
             if search == "greedy":
                 input = test_input[i]['Feeds']
+                history = test_input[i]['History']
                 input_ = input.view(-1, input.size(0), input.size(1))
-                logits, ids = model(input_)
+                history_ = history.view(-1, history.size(0), history.size(1))
+                logits, ids = model(input_, history_)
             # elif search == "beam":
                 # result = beam_search(model, n=batch_x, max_len, k=beam_width)
             else:
@@ -53,8 +55,7 @@ def greedy_infer_batch(model, test_dataloader, search='greedy', beam_width=5):
     with torch.no_grad():
         for idx, sample in enumerate(test_dataloader):
             if search == "greedy":
-                input = sample['Feeds']
-                logits, ids = model(input)
+                logits, ids = model(sample['Feeds'], sample['History'])
             # elif search == "beam":
                 # result = beam_search(model, x_stncs, x_ids, tgt_vocab, k=beam_width)
             else:
@@ -67,7 +68,7 @@ def main():
     if not os.path.exists(args.ckpt_file):
         raise FileNotFoundError("model file not found")
 
-    dataset = RerankingDataset(args.n_test, args.max_len)
+    dataset = RerankingDataset(args.n_test, args.max_len, args.history_len)
 
     model = PointerNet(args.embedding_size,
                        args.hiddens,
@@ -80,16 +81,16 @@ def main():
     print('Load model parameters from %s' % args.ckpt_file)
 
     # infer one by one
-    # greedy_infer(model, dataset)
+    greedy_infer(model, dataset)
 
     # infer by batch
-    test_dataloader = DataLoader(dataset,
-                                  batch_size=args.batch_size,
-                                  shuffle=True,
-                                  num_workers=4,
-                                  drop_last=True)
-
-    greedy_infer_batch(model, test_dataloader, search='greedy')
+    # test_dataloader = DataLoader(dataset,
+    #                               batch_size=args.batch_size,
+    #                               shuffle=True,
+    #                               num_workers=4,
+    #                               drop_last=True)
+    #
+    # greedy_infer_batch(model, test_dataloader, search='greedy')
 
 
 if __name__ == '__main__':

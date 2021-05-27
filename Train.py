@@ -33,6 +33,7 @@ parser.add_argument('--valid_size', default=10000, type=int, help='Validation da
 parser.add_argument('--eval_size', default=10000, type=int, help='Evaluation data size')
 parser.add_argument('--batch_size', default=256, type=int, help='Batch size')
 parser.add_argument('--max_len', default=50, type=int, help='max item sequence length')
+parser.add_argument('--history_len', default=5, type=int, help='history sequence length')
 # Train
 parser.add_argument('--n_epochs', default=50000, type=int, help='Number of epochs')
 # parser.add_argument('--lr', type=float, default=0.0001, help='Learning rate')
@@ -63,7 +64,7 @@ def eval(args, model, eval_dataloader):
     logging.info('Evaluating on %d minibatches...' % limit)
     with torch.no_grad():
         for idx, sample in enumerate(eval_dataloader):
-            logits, indices = model(sample['Feeds'])
+            logits, indices = model(sample['Feeds'], sample['History'])
             labels = sample['Labels']
             labels = labels.view(args.batch_size, -1)
             true_labels = torch.gather(labels, 1, indices)
@@ -93,16 +94,19 @@ def validation(args, model, valid_dataloader, SSLloss, train_loss, idxa, epoch, 
     cnt = len(valid_dataloader)
     for idx, sample in enumerate(valid_dataloader):
         with torch.no_grad():
-            logits, indices = model(sample['Feeds'])
+            logits, indices = model(sample['Feeds'], sample['History'])
             loss = SSLloss(logits, sample['Labels'])
             if torch.isnan(loss):
                 cnt -= 1
             else:
                 valid_loss += SSLloss(logits, sample['Labels'])
-    valid_loss /= cnt
     logging.info('During validation, %d in %d batches loss is nan' % (len(valid_dataloader) - cnt, len(valid_dataloader)))
-    logging.info('epoch %d, after step %d, begin validation, average validation loss = %f'
+    if cnt != 0:
+        valid_loss /= cnt
+        logging.info('epoch %d, after step %d, begin validation, average validation loss = %f'
                  % (epoch, idxa + 1, valid_loss))
+    else:
+        valid_loss = float('inf')
     writer.add_scalar('scalar/train_loss', train_loss, (idxa + 1) // 50)
     writer.add_scalar('scalar/valid_loss', valid_loss, (idxa + 1) // 50)
     model.train()
@@ -119,11 +123,12 @@ def train(args, model, train_dataloader, valid_dataloader, eval_dataloader, opti
 
         for idx, sample in enumerate(train_dataloader):
             SSLloss = Seq2SlateLoss()
-            logits, indices = model(sample['Feeds'])
+            logits, indices = model(sample['Feeds'], sample['History'])
             logits = logits.contiguous()
 
             optimizer.zero_grad()
             loss = SSLloss(logits, sample['Labels'])
+            # print(loss)
             loss.backward()  # do not use retain_graph=True
             # torch.nn.utils.clip_grad_value_(model.parameters(), 5)
             optimizer.step()
@@ -178,9 +183,11 @@ def main():
 
     max_len = Args.max_len
     bsz = Args.batch_size
-    data_dict = {'train': RerankingDataset(Args.train_size, max_len),
-               'valid': RerankingDataset(Args.valid_size, max_len),
-               'eval': RerankingDataset(Args.eval_size, max_len),
+    history_len = Args.history_len
+    # import pdb; pdb.set_trace()
+    data_dict = {'train': RerankingDataset(Args.train_size, max_len, history_len),
+               'valid': RerankingDataset(Args.valid_size, max_len, history_len),
+               'eval': RerankingDataset(Args.eval_size, max_len, history_len),
     }
 
     train_data = data_dict['train']

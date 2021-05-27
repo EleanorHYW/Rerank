@@ -287,31 +287,33 @@ class PointerNet(nn.Module):
                                dropout,
                                bidir)
         self.decoder = Decoder(embedding_dim, hidden_dim)
+
+        # change decoder_input into history item embedding
+
         # decoder_input0 <go>
         self.decoder_input0 = Parameter(torch.FloatTensor(embedding_dim), requires_grad=False)
 
         # Initialize decoder_input0
         nn.init.uniform_(self.decoder_input0, -1, 1)
 
-    def forward(self, inputs):
+    def forward(self, inputs, history):
         """
         PointerNet - Forward-pass
 
         :param Tensor inputs: Input sequence
+        :param Tensor history: History sequence
         :return: Pointers probabilities and indices
         """
-        # import pdb; pdb.set_trace()
         batch_size = inputs.size(0)
-        input_length = inputs.size(1)
 
-        decoder_input0 = self.decoder_input0.unsqueeze(0).expand(batch_size, -1)
+        # decoder_input0 = self.decoder_input0.unsqueeze(0).expand(batch_size, -1)
+        decoder_input0 = torch.mean(history, dim=1)
 
         embedded_inputs = inputs
         # embedded_inputs = self.embedding(inputs).view(batch_size, input_length, -1)
 
         encoder_hidden0 = self.encoder.init_hidden(embedded_inputs)
-        encoder_outputs, encoder_hidden = self.encoder(embedded_inputs,
-                                                       encoder_hidden0)
+        encoder_outputs, encoder_hidden = self.encoder(embedded_inputs, encoder_hidden0)
         if self.bidir:
             decoder_hidden0 = (torch.cat([_ for _ in encoder_hidden[0][-2:]], dim=-1),
                                torch.cat([_ for _ in encoder_hidden[1][-2:]], dim=-1))
