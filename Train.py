@@ -17,12 +17,14 @@ import numpy as np
 import argparse
 
 from PointerNet import PointerNet
+from PNet import PNet
 from Seq2SlateLoss import Seq2SlateLoss
 from RerankingDataset import RerankingDataset
 from utils import BatchManager, load_data, load_embedding
 from tensorboardX import SummaryWriter
 from Metrics import auc, getmapk
 from sklearn.metrics import roc_auc_score
+from test_onnx import test
 
 
 parser = argparse.ArgumentParser(description="Pytorch implementation of Pointer-Net")
@@ -84,7 +86,7 @@ def eval(args, model, eval_dataloader):
             # average_mapk += getmapk(actual, indices)
             if idx >= limit:
                 break
-        average_auc /= average_over_num
+        # average_auc /= average_over_num
         print("average_auc: ", average_auc)
     model.train()
 
@@ -134,7 +136,7 @@ def train(args, model, train_dataloader, valid_dataloader, eval_dataloader, opti
             optimizer.step()
             if (idx + 1) % 10 == 0:
                 logging.info('epoch %d, step %d, loss = %f' % (epoch, idx + 1, loss))
-            if (idx + 1) % 50 == 0:
+            if (idx + 1) % 100 == 0:
                 train_loss = loss.cpu().detach().numpy()
                 validation(args, model, valid_dataloader, SSLloss, train_loss, idx, epoch, writer)
             if (idx + 1) % 100 == 0:
@@ -148,7 +150,7 @@ def train(args, model, train_dataloader, valid_dataloader, eval_dataloader, opti
                       'lr': optimizer.param_groups[0]['lr']}
         if not os.path.exists('./models'):
             os.mkdir('./models')
-        torch.save(save_state, './models/checkpoint_%d.pkl' % epoch)
+        torch.save(save_state, './models/checkpoint_%d.pt' % epoch)
         logging.info('Model saved in dir %s' % './models')
         writer.close()
 
@@ -169,7 +171,12 @@ def main():
     else:
         USE_CUDA = False
 
-    model = PointerNet(Args.embedding_size,
+    # model = PointerNet(Args.embedding_size,
+    #                    Args.hiddens,
+    #                    Args.n_lstms,
+    #                    Args.dropout,
+    #                    Args.bidir)
+    model = PNet(Args.embedding_size,
                        Args.hiddens,
                        Args.n_lstms,
                        Args.dropout,
@@ -223,6 +230,8 @@ def main():
 
     train(Args, model, train_dataloader, valid_dataloader, eval_dataloader, optimizer, scheduler, saved_state['epoch'])
     # eval(Args, model, eval_dataloader)
+
+    # test(model, './models/checkpoint_0.pt', 'encoder.onnx', 'decoder.onnx')
 
 if __name__ == '__main__':
     main()
