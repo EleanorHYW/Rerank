@@ -5,3 +5,4 @@ models
 runs
 run.sh
 *.onnx
+collect_env.py

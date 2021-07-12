@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch.nn import Parameter
 import torch.nn.functional as F
 from torch import tanh, sigmoid
-
+from torch.nn.utils.rnn import pad_sequence,pack_padded_sequence,pack_sequence,pad_packed_sequence
 
 class Encoder(nn.Module):
     """
@@ -39,7 +39,7 @@ class Encoder(nn.Module):
         self.h0 = Parameter(torch.zeros(1), requires_grad=False)
         self.c0 = Parameter(torch.zeros(1), requires_grad=False)
 
-    def forward(self, embedded_inputs,
+    def forward(self, embedded_inputs, masks,
                 hidden):
         """
         Encoder - Forward-pass
@@ -48,12 +48,12 @@ class Encoder(nn.Module):
         :param Tensor hidden: Initiated hidden units for the LSTMs (h, c)
         :return: LSTMs outputs and hidden units (h, c)
         """
-
-        embedded_inputs = embedded_inputs.permute(1, 0, 2)
+        # bsz * seq_len * embedding_dim
+        # embedded_inputs = embedded_inputs.permute(1, 0, 2)
 
         outputs, hidden = self.lstm(embedded_inputs, hidden)
-
-        return outputs.permute(1, 0, 2), hidden
+        outputs = pad_packed_sequence(outputs, batch_first=True)
+        return outputs[0], hidden, outputs[1]
 
     def init_hidden(self, embedded_inputs):
         """
@@ -63,7 +63,7 @@ class Encoder(nn.Module):
         :return: Initiated hidden units for the LSTMs (h, c)
         """
 
-        batch_size = embedded_inputs.size(0)
+        batch_size = embedded_inputs.batch_sizes[0]
 
         # Reshaping (Expanding)
         h0 = self.h0.unsqueeze(0).unsqueeze(0).repeat(self.n_layers,
@@ -72,7 +72,8 @@ class Encoder(nn.Module):
         c0 = self.h0.unsqueeze(0).unsqueeze(0).repeat(self.n_layers,
                                                       batch_size,
                                                       self.hidden_dim)
-
+        nn.init.uniform_(h0, -1, 1)
+        nn.init.uniform_(c0, -1, 1)
         return h0, c0
 
 
@@ -119,6 +120,7 @@ class Attention(nn.Module):
 
         # (batch, hidden_dim, seq_len)
         inp = self.input_linear(input).unsqueeze(2).expand(-1, -1, context.size(1))
+        seq_len = inp.size(2)
 
         # (batch, hidden_dim, seq_len)
         context = context.permute(0, 2, 1)
@@ -129,16 +131,21 @@ class Attention(nn.Module):
 
         # (batch, seq_len)
         att = torch.bmm(V, self.tanh(inp + ctx)).squeeze(1)
+        self.inf = self._inf.expand(*mask.size())
+        attn = self.softmax(att)
         if len(att[mask]) > 0:
             att[mask] = self.inf[mask]
+        
         alpha = self.softmax(att)
+        # smooth
+        # alpha = torch.where(torch.isnan(alpha), torch.full_like(alpha, 0), alpha)
 
         hidden_state = torch.bmm(ctx, alpha.unsqueeze(2)).squeeze(2)
 
-        return hidden_state, alpha
+        return hidden_state, alpha, attn
 
     def init_inf(self, mask_size):
-        self.inf = self._inf.unsqueeze(1).expand(*mask_size)
+        self.inf = self._inf.expand(mask_size[1])
 
 
 class Decoder(nn.Module):
@@ -165,13 +172,15 @@ class Decoder(nn.Module):
         self.att = Attention(hidden_dim, hidden_dim)
 
         # Used for propagating .cuda() command
-        self.mask = Parameter(torch.ones(1), requires_grad=False)
-        self.runner = Parameter(torch.zeros(1), requires_grad=False)
+        # self.mask = Parameter(torch.ones(1), requires_grad=False)
+        self.runner = Parameter(torch.arange(500), requires_grad=False)
 
-    def forward(self, embedded_inputs,
+    def forward(self, 
+                embedded_inputs,
                 decoder_input,
                 hidden,
-                context):
+                context,
+                masks):
         """
         Decoder - Forward-pass
 
@@ -181,24 +190,20 @@ class Decoder(nn.Module):
         :param Tensor context: Encoder's outputs
         :return: (Output probabilities, Pointers indices), last hidden state
         """
+        batch_size = embedded_inputs.batch_sizes[0]
+        seq_lens = masks.sum(dim=1)
+        seq_idx = torch.Tensor([seq_lens[:i].sum().item() for i in range(batch_size + 1)]).to(seq_lens.device)
+        input_length = max(seq_lens)
 
-        batch_size = embedded_inputs.size(0)
-        input_length = embedded_inputs.size(1)
+        # # (batch, seq_len)
+        # mask = self.mask.repeat(input_length).unsqueeze(0).repeat(batch_size, 1)
+        self.att.init_inf(masks.size())
 
-        # (batch, seq_len)
-        mask = self.mask.repeat(input_length).unsqueeze(0).repeat(batch_size, 1)
-        self.att.init_inf(mask.size())
+        # Generating arange(input_length + 1), broadcasted across batch_size
+        runner = self.runner[:input_length].unsqueeze(0).long()
+        # runner = runner.unsqueeze(0).expand(batch_size, -1).long()
 
-        # Generating arang(input_length), broadcasted across batch_size
-        runner = self.runner.repeat(input_length)
-        for i in range(input_length):
-            runner.data[i] = i
-        runner = runner.unsqueeze(0).expand(batch_size, -1).long()
-
-        outputs = []
-        pointers = []
-
-        def step(x, hidden):
+        def step(x, hidden, cxt, msk):
             """
             Recurrence step function
 
@@ -222,39 +227,51 @@ class Decoder(nn.Module):
             h_t = out * tanh(c_t)
 
             # Attention section
-            hidden_t, output = self.att(h_t, context, torch.eq(mask, 0))
+            hidden_t, output, attn = self.att(h_t, cxt, torch.eq(msk, 0))
             # output is softmaxed attn score
             hidden_t = tanh(self.hidden_out(torch.cat((hidden_t, h_t), 1)))
 
-            return hidden_t, c_t, output
+            return hidden_t, c_t, output, attn
 
         # Recurrence loop
-        for _ in range(input_length):
-            h_t, c_t, outs = step(decoder_input, hidden)
-            hidden = (h_t, c_t)
+        outputs = []
+        pointers = []
+        atts = []
+        for idx in range(batch_size):
+            output = []
+            pointer = []
+            att = []
+            inp = decoder_input[idx].unsqueeze(0)
+            hid = (hidden[0][idx].unsqueeze(0), hidden[1][idx].unsqueeze(0))
+            length = seq_lens[idx].item()
+            cxt = context[idx][:length].unsqueeze(0)
+            msk = masks[idx][:length].unsqueeze(0)
+            # import pdb; pdb.set_trace()
+            emb = embedded_inputs.data[int(seq_idx[idx].item()) : int(seq_idx[idx + 1].item())].unsqueeze(0)
+            for _ in range(seq_lens[idx]):
+                h_t, c_t, outs, attn = step(inp, hid, cxt, msk)
+                hid = (h_t, c_t)
+                # Masking selected inputs
+                masked_outs = outs * msk
+                # Get maximum probabilities and indices
+                max_probs, indices = masked_outs.max(1)
+                one_hot_pointers = (runner[0][:length] == indices.unsqueeze(1).expand(-1, outs.size()[1])).float()
+                # Update mask to ignore seen indices
+                msk = msk * (1 - one_hot_pointers)
 
-            # Masking selected inputs
-            masked_outs = outs * mask
-
-            # Get maximum probabilities and indices
-            max_probs, indices = masked_outs.max(1)
-            one_hot_pointers = (runner == indices.unsqueeze(1).expand(-1, outs.size()[1])).float()
-
-            # Update mask to ignore seen indices
-            mask  = mask * (1 - one_hot_pointers)
-
-            # Get embedded inputs by max indices
-            embedding_mask = one_hot_pointers.unsqueeze(2).expand(-1, -1, self.embedding_dim).byte()
-            decoder_input = embedded_inputs[embedding_mask.bool()].view(batch_size, self.embedding_dim)
-
-            # warning: may cause problem because outs is the total softmax rather than softmax over unseened indices
-            outputs.append(outs.unsqueeze(0))
-            pointers.append(indices.unsqueeze(1))
-
-        outputs = torch.cat(outputs).permute(1, 0, 2)
-        pointers = torch.cat(pointers, 1)
-
-        return (outputs, pointers), hidden
+                # Get embedded inputs by max indices
+                embedding_mask = one_hot_pointers.unsqueeze(2).expand(-1, -1, self.embedding_dim).byte()
+                inp = emb[embedding_mask.bool()].unsqueeze(0)
+                # warning: may cause problem because outs is the total softmax rather than softmax over unseened indices
+                output.append(outs)
+                att.append(attn)
+                pointer.append(indices)
+            outputs.append(torch.stack(output).permute(1, 0, 2))
+            atts.append(torch.stack(att).permute(1, 0, 2))
+            pointers.append(torch.stack(pointer).transpose(0, 1))
+        assert len(outputs) == batch_size
+        # add another assert
+        return (outputs, pointers), atts, hidden
 
 
 class PointerNet(nn.Module):
@@ -280,7 +297,7 @@ class PointerNet(nn.Module):
         super(PointerNet, self).__init__()
         self.embedding_dim = embedding_dim
         self.bidir = bidir
-        self.embedding = nn.Linear(2, embedding_dim)
+        # self.embedding = nn.Linear(2, embedding_dim)
         self.encoder = Encoder(embedding_dim,
                                hidden_dim,
                                lstm_layers,
@@ -291,12 +308,13 @@ class PointerNet(nn.Module):
         # change decoder_input into history item embedding
 
         # decoder_input0 <go>
-        self.decoder_input0 = Parameter(torch.FloatTensor(embedding_dim), requires_grad=False)
+        # requires_grad = True or False ? 
+        self.decoder_input0 = Parameter(torch.FloatTensor(embedding_dim), requires_grad=True)
 
         # Initialize decoder_input0
         nn.init.uniform_(self.decoder_input0, -1, 1)
 
-    def forward(self, inputs, history):
+    def forward(self, inputs, masks, history=None):
         """
         PointerNet - Forward-pass
 
@@ -304,25 +322,27 @@ class PointerNet(nn.Module):
         :param Tensor history: History sequence
         :return: Pointers probabilities and indices
         """
-        batch_size = inputs.size(0)
+        batch_size = inputs.batch_sizes[0]
 
-        # decoder_input0 = self.decoder_input0.unsqueeze(0).expand(batch_size, -1)
-        decoder_input0 = torch.mean(history, dim=1)
+        decoder_input0 = self.decoder_input0.unsqueeze(0).expand(batch_size, -1)
+        # decoder_input0 = torch.mean(history, dim=1)
 
-        embedded_inputs = inputs
+        embedded_inputs = inputs.to(decoder_input0.device)
         # embedded_inputs = self.embedding(inputs).view(batch_size, input_length, -1)
+        masks = masks.to(decoder_input0.device)
 
         encoder_hidden0 = self.encoder.init_hidden(embedded_inputs)
-        encoder_outputs, encoder_hidden = self.encoder(embedded_inputs, encoder_hidden0)
+        encoder_outputs, encoder_hidden, seq_lens = self.encoder(embedded_inputs, masks, encoder_hidden0)
         if self.bidir:
             decoder_hidden0 = (torch.cat([_ for _ in encoder_hidden[0][-2:]], dim=-1),
                                torch.cat([_ for _ in encoder_hidden[1][-2:]], dim=-1))
         else:
             decoder_hidden0 = (encoder_hidden[0][-1],
                                encoder_hidden[1][-1])
-        (outputs, pointers), decoder_hidden = self.decoder(embedded_inputs,
+        (outputs, pointers), atts, decoder_hidden = self.decoder(embedded_inputs,
                                                            decoder_input0,
                                                            decoder_hidden0,
-                                                           encoder_outputs)
+                                                           encoder_outputs,
+                                                           masks)
 
-        return  outputs, pointers
+        return  outputs, pointers, atts

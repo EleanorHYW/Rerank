@@ -8,21 +8,24 @@ http://arxiv.org/pdf/1506.03134v1.pdf.
 
 import torch
 import torch.backends.cudnn as cudnn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 import logging
 import os
 import shutil
 import sys
 import numpy as np
 import argparse
+from torch import randperm
+from torch._utils import _accumulate
+import json
 
 from PointerNet import PointerNet
 from PNet import PNet
 from Seq2SlateLoss import Seq2SlateLoss
-from RerankingDataset import RerankingDataset
-from utils import BatchManager, load_data, load_embedding
+from RerankingDataset import MslrItemDataset, MslrLabelDataset, RightPadDataset, LengthDataset, NestedDictionaryDataset, SubsetDataset, MaskDataset
+from utils import load_data, random_split, delete_seq_with_max_length, feature_normalize
 from tensorboardX import SummaryWriter
-from Metrics import auc, getmapk
+from Metrics import auc, getmapk, getndcgK
 from sklearn.metrics import roc_auc_score
 from test_onnx import test
 
@@ -30,9 +33,9 @@ from test_onnx import test
 parser = argparse.ArgumentParser(description="Pytorch implementation of Pointer-Net")
 
 # Data
-parser.add_argument('--train_size', default=1000000, type=int, help='Training data size')
-parser.add_argument('--valid_size', default=10000, type=int, help='Validation data size')
-parser.add_argument('--eval_size', default=10000, type=int, help='Evaluation data size')
+parser.add_argument('--train_size', default=0.8, type=float, help='Training data size')
+parser.add_argument('--valid_size', default=0.1, type=float, help='Validation data size')
+parser.add_argument('--eval_size', default=0.1, type=float, help='Evaluation data size')
 parser.add_argument('--batch_size', default=256, type=int, help='Batch size')
 parser.add_argument('--max_len', default=50, type=int, help='max item sequence length')
 parser.add_argument('--history_len', default=5, type=int, help='history sequence length')
@@ -57,37 +60,56 @@ logging.basicConfig(
     filemode='w',
 )
 
-def eval(args, model, eval_dataloader):
+def eval(args, model, eval_dataloader, limit=None):
     model.eval()
     average_auc = 0
-    average_mapk = 0
-    limit = len(eval_dataloader)
+    ndcg = 0
+    limit = len(eval_dataloader) if limit is None else limit
     average_over_num = limit
     logging.info('Evaluating on %d minibatches...' % limit)
     with torch.no_grad():
         for idx, sample in enumerate(eval_dataloader):
-            logits, indices = model(sample['Feeds'], sample['History'])
+            logits, indices = model(sample['Feeds'], sample['Masks'])
             labels = sample['Labels']
-            labels = labels.view(args.batch_size, -1)
-            true_labels = torch.gather(labels, 1, indices)
+            masks = sample['Masks']
+            true_labels = labels[masks.bool()]
             scores = torch.max(logits, 2)[0]
+            true_scores = scores[masks.bool()]
             # if a class is not present in the ground truth of a batch, ROC AUC score is not defined in that case.
             # may raise 'ValueError: Only one class present in y_true' that way
             try:
-                auc_score = roc_auc_score(true_labels, scores)
+                # auc
+                auc_score = roc_auc_score(true_labels, true_scores.cpu())
                 average_auc += auc_score
-                # logging.info('eval step %d, auc_score = %f' % (idx + 1, auc_score))
+                # ndcg
+                idxes = torch.nonzero(labels == 1)
+                prev = -1
+                golden_list = []
+                cnt = 0
+                for i in idxes:
+                    if i[0] == prev:
+                        golden_list.append(i[1])
+                    else:
+                        if prev == -1:
+                            golden_list = [i[1]]
+                            prev = 0
+                            continue
+                        length = len(golden_list)
+                        ndcg += getndcgK(indices[cnt, :length], golden_list, length)
+                        cnt += 1
+                        golden_list = [i[1]]
+                        prev = i[0]               
+                ndcg += getndcgK(indices[cnt, :len(golden_list)], golden_list, len(golden_list))
+                ndcg /= cnt
             except ValueError:
                 average_over_num -= 1
                 pass
-            # average_auc += auc(true_labels, indices)
-            # actual = torch.tensor(range(0, 10)).repeat(args.batch_size, 1)
-            # actual[labels == 0] = 11
-            # average_mapk += getmapk(actual, indices)
             if idx >= limit:
                 break
-        # average_auc /= average_over_num
+        if average_over_num != 0:
+            average_auc /= average_over_num
         print("average_auc: ", average_auc)
+        print("ndcg: ", ndcg)
     model.train()
 
 def validation(args, model, valid_dataloader, SSLloss, train_loss, idxa, epoch, writer):
@@ -96,7 +118,7 @@ def validation(args, model, valid_dataloader, SSLloss, train_loss, idxa, epoch, 
     cnt = len(valid_dataloader)
     for idx, sample in enumerate(valid_dataloader):
         with torch.no_grad():
-            logits, indices = model(sample['Feeds'], sample['History'])
+            logits, indices = model(sample['Feeds'], sample['Masks'])
             loss = SSLloss(logits, sample['Labels'])
             if torch.isnan(loss):
                 cnt -= 1
@@ -124,26 +146,27 @@ def train(args, model, train_dataloader, valid_dataloader, eval_dataloader, opti
         writer = SummaryWriter('runs/epoch%d' % epoch)
 
         for idx, sample in enumerate(train_dataloader):
-            SSLloss = Seq2SlateLoss()
-            logits, indices = model(sample['Feeds'], sample['History'])
-            logits = logits.contiguous()
-
+            import pdb; pdb.set_trace()
             optimizer.zero_grad()
+            SSLloss = Seq2SlateLoss(args.max_len)
+            logits, indices, atts = model(sample['Feeds'], sample['Masks'])
             loss = SSLloss(logits, sample['Labels'])
-            # print(loss)
             loss.backward()  # do not use retain_graph=True
-            # torch.nn.utils.clip_grad_value_(model.parameters(), 5)
             optimizer.step()
-            if (idx + 1) % 10 == 0:
+            if idx >= 0:
+                for item in model.named_parameters():
+                    print(item[0])
+                    print(item[1].grad)
+            # torch.nn.utils.clip_grad_value_(model.parameters(), 5)
+            if (idx + 1) % 1 == 0:
                 logging.info('epoch %d, step %d, loss = %f' % (epoch, idx + 1, loss))
             if (idx + 1) % 100 == 0:
                 train_loss = loss.cpu().detach().numpy()
                 validation(args, model, valid_dataloader, SSLloss, train_loss, idx, epoch, writer)
             if (idx + 1) % 100 == 0:
                 eval(args, model, eval_dataloader)
-            scheduler.step()  # last_epoch=-1, which will not update lr at the first time
 
-        if epoch < 4:
+        if epoch < 10 and epoch % 3 == 0:
             scheduler.step()  # make sure lr will not be too small
         save_state = {'state_dict': model.state_dict(),
                       'epoch': epoch + 1,
@@ -171,16 +194,12 @@ def main():
     else:
         USE_CUDA = False
 
-    # model = PointerNet(Args.embedding_size,
-    #                    Args.hiddens,
-    #                    Args.n_lstms,
-    #                    Args.dropout,
-    #                    Args.bidir)
-    model = PNet(Args.embedding_size,
+    model = PointerNet(Args.embedding_size,
                        Args.hiddens,
                        Args.n_lstms,
                        Args.dropout,
                        Args.bidir)
+
     print(model)
 
     if USE_CUDA:
@@ -191,32 +210,46 @@ def main():
     max_len = Args.max_len
     bsz = Args.batch_size
     history_len = Args.history_len
-    # import pdb; pdb.set_trace()
-    data_dict = {'train': RerankingDataset(Args.train_size, max_len, history_len),
-               'valid': RerankingDataset(Args.valid_size, max_len, history_len),
-               'eval': RerankingDataset(Args.eval_size, max_len, history_len),
-    }
 
-    train_data = data_dict['train']
-    train_dataloader = DataLoader(train_data,
+    data = np.load('dict.npz', allow_pickle=True)
+    feeds, labels = delete_seq_with_max_length(data['Feeds'], data['Labels'], max_len)
+    feeds = feature_normalize(feeds)
+    dataset = NestedDictionaryDataset({
+        'Feeds': MslrItemDataset(feeds),
+        'Labels': MslrLabelDataset(labels),
+        'Masks': MaskDataset(labels),
+    })
+
+    data_size = len(feeds)
+    train_size = int(Args.train_size * data_size)
+    valid_size = int(Args.valid_size * data_size)
+    test_size = int(data_size - train_size - valid_size)
+    lengths = [train_size, valid_size, test_size]
+    assert sum(lengths) == data_size, "Sum of input lengths does not equal the length of the input dataset!"
+    indices = randperm(sum(lengths)).tolist()
+    train_dataset, valid_dataset, test_dataset = [SubsetDataset(dataset, indices[offset - length : offset]) for offset, length in zip(_accumulate(lengths), lengths)]
+    logging.info("train dataset: {} samples, valid dataset: {} samples, test dataset: {} samples".format(len(train_dataset), len(valid_dataset), len(test_dataset)))
+
+    train_dataloader = DataLoader(train_dataset,
                                   batch_size=bsz,
-                                  shuffle=True,
-                                  num_workers=4,
+                                  shuffle=False,
+                                  num_workers=0,
+                                  collate_fn=train_dataset.collater,
                                   drop_last=True)
-    valid_data = data_dict['valid']
-    valid_dataloader = DataLoader(valid_data,
+    valid_dataloader = DataLoader(valid_dataset,
                                   batch_size=bsz,
-                                  shuffle=True,
-                                  num_workers=4,
+                                  shuffle=False,
+                                  num_workers=0,
+                                  collate_fn=valid_dataset.collater,
                                   drop_last=True)
-    eval_data = data_dict['eval']
-    eval_dataloader = DataLoader(eval_data,
+    eval_dataloader = DataLoader(test_dataset,
                                   batch_size=bsz,
-                                  shuffle=True,
-                                  num_workers=4,
+                                  shuffle=False,
+                                  num_workers=0,
+                                  collate_fn=valid_dataset.collater,
                                   drop_last=True)
 
-    saved_state = {'epoch': 0, 'lr': 0.001}
+    saved_state = {'epoch': 0, 'lr': 0.00001}
     if os.path.exists(Args.ckpt_file):
         saved_state = torch.load(Args.ckpt_file)
         model.load_state_dict(saved_state['state_dict'])
@@ -224,13 +257,11 @@ def main():
 
     parameters = filter(lambda p: p.requires_grad, model.parameters())
     optimizer = torch.optim.Adam(parameters, lr=saved_state['lr'])
-    # optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=saved_state['lr'])
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.1)
-    # scheduler.step()  # last_epoch=-1, which will not update lr at the first time
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=100, gamma=0.1)
 
+    # import pdb; pdb.set_trace()
     train(Args, model, train_dataloader, valid_dataloader, eval_dataloader, optimizer, scheduler, saved_state['epoch'])
-    # eval(Args, model, eval_dataloader)
-
+    eval(Args, model, eval_dataloader)
     # test(model, './models/checkpoint_0.pt', 'encoder.onnx', 'decoder.onnx')
 
 if __name__ == '__main__':
