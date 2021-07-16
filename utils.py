@@ -44,9 +44,10 @@ def load_data(filename):
             'Labels': np.array(labels[1:]),
         }
 
-def delete_seq_with_max_length(data, labels, max_length):
+def delete_seq_with_max_length(data, labels, scores, max_length):
     ret_data = []
     ret_labels = []
+    ret_scores = []
     cnt = 0
     for i in range(len(data)):
         if len(data[i]) > max_length:
@@ -54,15 +55,16 @@ def delete_seq_with_max_length(data, labels, max_length):
         else:
             ret_data.append(data[i])
             ret_labels.append(labels[i])
+            ret_scores.append(scores[i])
 
     print("Delete {} sequence with length > {}".format(cnt, max_length))
-    return np.array(ret_data), np.array(ret_labels)
+    return np.array(ret_data), np.array(ret_labels), np.array(ret_scores)
 
 def feature_normalize(feeds):
-    for feed in feeds:
-        mu = np.mean(feed, axis=0).reshape(-1)
-        std = np.std(feed, axis=0).reshape(-1)
-        feed = (feed - mu)/(std + 1/math.exp(1))
+    for i in range(len(feeds)):
+        mu = np.mean(feeds[i], axis=0).reshape(-1)
+        std = np.std(feeds[i], axis=0).reshape(-1)
+        feeds[i] = (feeds[i] - mu)/(std + 1/math.exp(1))
     return feeds
 
 def copy_tensor(src, dst):

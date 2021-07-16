@@ -4,8 +4,7 @@ import torch.nn as nn
 
 
 def getdcg(scores):
-    return np.sum(np.divide(np.power(2, scores) - 1, np.log2(np.arange(scores.shape[0], dtype=np.float32) + 2)),
-        dtype=np.float32)
+    return np.divide(np.power(2, scores) - 1, np.log2(np.arange(scores.shape[0], dtype=np.float32) + 2)).sum()
 
 def getndcgK(model_list, golden_list, K):
     """
@@ -15,18 +14,18 @@ def getndcgK(model_list, golden_list, K):
     :param Tensor item_list: true item list that the usr interact with
     :return: ndcg score
     """
-    model_list = model_list[:K]
+    model_list = model_list[:K].cpu()
     golden_list = golden_list[:K]
-    relevant = np.ones_like(golden_list)
-    it2rel = {it: rel for it, rel in zip(golden_list, relevant)}
-    rank_scores = np.asarray([it2rel.get(it, 0.0) for it in model_list], dtype=np.float32)
+    # relevant = np.ones_like(golden_list)
+    # it2rel = {it: rel for it, rel in zip(golden_list, relevant)}
+    # rank_scores = np.asarray([it2rel.get(it, 0.0) for it in model_list], dtype=np.float32)
 
-    idcg = getdcg(relevant)
-    dcg = getdcg(rank_scores)
+    idcg = getdcg(golden_list)
+    dcg = getdcg(model_list)
 
-    if dcg == 0:
+    if idcg == 0:
         return 0.0
-    return idcg / dcg
+    return dcg / idcg
 
 def getapk(actual, predicted, k=10):
     """

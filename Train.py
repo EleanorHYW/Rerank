@@ -62,54 +62,29 @@ logging.basicConfig(
 
 def eval(args, model, eval_dataloader, limit=None):
     model.eval()
-    average_auc = 0
     ndcg = 0
+    ndcg_ten = 0
+    cnt = 0
     limit = len(eval_dataloader) if limit is None else limit
-    average_over_num = limit
     logging.info('Evaluating on %d minibatches...' % limit)
     with torch.no_grad():
         for idx, sample in enumerate(eval_dataloader):
-            logits, indices = model(sample['Feeds'], sample['Masks'])
-            labels = sample['Labels']
-            masks = sample['Masks']
-            true_labels = labels[masks.bool()]
-            scores = torch.max(logits, 2)[0]
-            true_scores = scores[masks.bool()]
-            # if a class is not present in the ground truth of a batch, ROC AUC score is not defined in that case.
-            # may raise 'ValueError: Only one class present in y_true' that way
-            try:
-                # auc
-                auc_score = roc_auc_score(true_labels, true_scores.cpu())
-                average_auc += auc_score
-                # ndcg
-                idxes = torch.nonzero(labels == 1)
-                prev = -1
-                golden_list = []
-                cnt = 0
-                for i in idxes:
-                    if i[0] == prev:
-                        golden_list.append(i[1])
-                    else:
-                        if prev == -1:
-                            golden_list = [i[1]]
-                            prev = 0
-                            continue
-                        length = len(golden_list)
-                        ndcg += getndcgK(indices[cnt, :length], golden_list, length)
-                        cnt += 1
-                        golden_list = [i[1]]
-                        prev = i[0]               
-                ndcg += getndcgK(indices[cnt, :len(golden_list)], golden_list, len(golden_list))
-                ndcg /= cnt
-            except ValueError:
-                average_over_num -= 1
-                pass
+            logits, indices, atts = model(sample['Feeds'], sample['Masks'])
+            # evaluation needs relevance_score related label
+            scores = sample['Scores']
+            golden_list = torch.sort(scores, dim=-1, descending=True)[0]
+            for i in range(len(indices)):
+                model_list = torch.gather(scores[i].cuda(), 0, indices[i].squeeze(0))
+                length = torch.nonzero(golden_list[0])[-1] + 1
+                ndcg += getndcgK(model_list, golden_list[i], model_list.size(0))
+                ndcg_ten += getndcgK(model_list, golden_list[i], 10)
+                cnt += 1
             if idx >= limit:
                 break
-        if average_over_num != 0:
-            average_auc /= average_over_num
-        print("average_auc: ", average_auc)
-        print("ndcg: ", ndcg)
+        ndcg = ndcg / cnt
+        ndcg_ten = ndcg_ten / cnt
+        print("ndcg: ", ndcg.item())
+        print("ndcg10:", ndcg_ten.item())
     model.train()
 
 def validation(args, model, valid_dataloader, SSLloss, train_loss, idxa, epoch, writer):
@@ -118,12 +93,9 @@ def validation(args, model, valid_dataloader, SSLloss, train_loss, idxa, epoch, 
     cnt = len(valid_dataloader)
     for idx, sample in enumerate(valid_dataloader):
         with torch.no_grad():
-            logits, indices = model(sample['Feeds'], sample['Masks'])
+            logits, indices, atts = model(sample['Feeds'], sample['Masks'])
             loss = SSLloss(logits, sample['Labels'])
-            if torch.isnan(loss):
-                cnt -= 1
-            else:
-                valid_loss += SSLloss(logits, sample['Labels'])
+            valid_loss += loss
     logging.info('During validation, %d in %d batches loss is nan' % (len(valid_dataloader) - cnt, len(valid_dataloader)))
     if cnt != 0:
         valid_loss /= cnt
@@ -146,24 +118,28 @@ def train(args, model, train_dataloader, valid_dataloader, eval_dataloader, opti
         writer = SummaryWriter('runs/epoch%d' % epoch)
 
         for idx, sample in enumerate(train_dataloader):
-            import pdb; pdb.set_trace()
+            # import pdb; pdb.set_trace()
             optimizer.zero_grad()
             SSLloss = Seq2SlateLoss(args.max_len)
             logits, indices, atts = model(sample['Feeds'], sample['Masks'])
             loss = SSLloss(logits, sample['Labels'])
             loss.backward()  # do not use retain_graph=True
             optimizer.step()
-            if idx >= 0:
-                for item in model.named_parameters():
-                    print(item[0])
-                    print(item[1].grad)
+            # if idx >= 0:
+            #     for item in model.named_parameters():
+            #         print(item[0])
+            #         print(item[1].grad)
             # torch.nn.utils.clip_grad_value_(model.parameters(), 5)
-            if (idx + 1) % 1 == 0:
+            if (idx + 1) % 5 == 0:
                 logging.info('epoch %d, step %d, loss = %f' % (epoch, idx + 1, loss))
-            if (idx + 1) % 100 == 0:
+            if (idx + 1) % 300 == 0:
                 train_loss = loss.cpu().detach().numpy()
                 validation(args, model, valid_dataloader, SSLloss, train_loss, idx, epoch, writer)
-            if (idx + 1) % 100 == 0:
+            if (idx + 1) % 20 == 0:
+                # for name, param in model.named_parameters():
+                #     print(name)
+                #     print(param)
+                #     import pdb; pdb.set_trace()
                 eval(args, model, eval_dataloader)
 
         if epoch < 10 and epoch % 3 == 0:
@@ -175,7 +151,7 @@ def train(args, model, train_dataloader, valid_dataloader, eval_dataloader, opti
             os.mkdir('./models')
         torch.save(save_state, './models/checkpoint_%d.pt' % epoch)
         logging.info('Model saved in dir %s' % './models')
-        writer.close()
+    writer.close()
 
 def main():
     # define a new Handler to log to console as well
@@ -211,13 +187,14 @@ def main():
     bsz = Args.batch_size
     history_len = Args.history_len
 
-    data = np.load('dict.npz', allow_pickle=True)
-    feeds, labels = delete_seq_with_max_length(data['Feeds'], data['Labels'], max_len)
+    data = np.load('../dict_large.npz', allow_pickle=True)
+    feeds, labels, scores = delete_seq_with_max_length(data['Feeds'], data['Labels'], data['Scores'], max_len)
     feeds = feature_normalize(feeds)
     dataset = NestedDictionaryDataset({
         'Feeds': MslrItemDataset(feeds),
         'Labels': MslrLabelDataset(labels),
         'Masks': MaskDataset(labels),
+        'Scores': MslrLabelDataset(scores),
     })
 
     data_size = len(feeds)
@@ -246,10 +223,10 @@ def main():
                                   batch_size=bsz,
                                   shuffle=False,
                                   num_workers=0,
-                                  collate_fn=valid_dataset.collater,
+                                  collate_fn=test_dataset.collater,
                                   drop_last=True)
 
-    saved_state = {'epoch': 0, 'lr': 0.00001}
+    saved_state = {'epoch': 0, 'lr': 0.001}
     if os.path.exists(Args.ckpt_file):
         saved_state = torch.load(Args.ckpt_file)
         model.load_state_dict(saved_state['state_dict'])
