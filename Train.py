@@ -149,7 +149,7 @@ def train(args, model, train_dataloader, valid_dataloader, eval_dataloader, opti
                       'lr': optimizer.param_groups[0]['lr']}
         if not os.path.exists('./models'):
             os.mkdir('./models')
-        torch.save(save_state, './models/checkpoint_%d.pt' % epoch)
+        torch.save(save_state, './models/checkpoint2_%d.pt' % epoch)
         logging.info('Model saved in dir %s' % './models')
     writer.close()
 

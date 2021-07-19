@@ -254,7 +254,10 @@ class Decoder(nn.Module):
                 # Masking selected inputs
                 masked_outs = outs * msk
                 # Get maximum probabilities and indices
-                max_probs, indices = masked_outs.max(1)
+                # max_probs, indices = masked_outs.max(1)
+                # random sampling according to probability instead of choosing max
+                indices = torch.multinomial(masked_outs, 1).view(-1)
+                # max_probs = masked_outs[0][indices]
                 one_hot_pointers = (runner[0][:length] == indices.unsqueeze(1).expand(-1, outs.size()[1])).float()
                 # Update mask to ignore seen indices
                 msk = msk * (1 - one_hot_pointers)
