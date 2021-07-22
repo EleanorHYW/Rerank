@@ -50,6 +50,7 @@ parser.add_argument('--hiddens', type=int, default=512, help='Number of hidden u
 parser.add_argument('--n_lstms', type=int, default=2, help='Number of LSTM layers')
 parser.add_argument('--dropout', type=float, default=0., help='Dropout value')
 parser.add_argument('--bidir', default=False, action='store_true', help='Bidirectional')
+parser.add_argument('--L2', default=False, action='store_true', help='L2 regularization')
 parser.add_argument('--seed', type=int, default=1, help='seed')
 parser.add_argument('--ckpt_file', type=str, default='checkpoint_0.pkl')
 
@@ -117,8 +118,10 @@ def train(args, model, train_dataloader, valid_dataloader, eval_dataloader, opti
             shutil.rmtree('runs/epoch%d' % epoch)
         writer = SummaryWriter('runs/epoch%d' % epoch)
 
+        lr = optimizer.param_groups[0]['lr']
+        logging.info('epoch %d, lr = %f' % (epoch, lr))
+
         for idx, sample in enumerate(train_dataloader):
-            # import pdb; pdb.set_trace()
             optimizer.zero_grad()
             SSLloss = Seq2SlateLoss(args.max_len)
             logits, indices, atts = model(sample['Feeds'], sample['Masks'])
@@ -144,8 +147,8 @@ def train(args, model, train_dataloader, valid_dataloader, eval_dataloader, opti
                       'lr': optimizer.param_groups[0]['lr']}
         if not os.path.exists('./models'):
             os.mkdir('./models')
-        torch.save(save_state, './models/checkpoint_base_%d.pt' % epoch)
-        logging.info('Model saved in dir %s' % './models')
+        torch.save(save_state, './models/base_bsz_{}_h_{}_dp_{}_L2_{}_ckp_{}.pt'.format(args.batch_size, args.hiddens, args.dropout, int(args.L2), epoch))
+        logging.info('Model saved in dir ./models/base_bsz_{}_h_{}_dp_{}_L2_{}_ckp_{}.pt'.format(args.batch_size, args.hiddens, args.dropout, int(args.L2), epoch))
     writer.close()
 
 def main():
@@ -228,8 +231,11 @@ def main():
         logging.info('Load model parameters from %s' % Args.ckpt_file)
 
     parameters = filter(lambda p: p.requires_grad, model.parameters())
-    # weight_decay=0.001 -> L2 regularization
-    optimizer = torch.optim.Adam(parameters, lr=saved_state['lr'], weight_decay=0.001)
+    if Args.L2:
+        # weight_decay=0.001 -> L2 regularization
+        optimizer = torch.optim.Adam(parameters, lr=saved_state['lr'], weight_decay=0.001)
+    else:
+        optimizer = torch.optim.Adam(parameters, lr=saved_state['lr'])
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1000, gamma=0.96)
 
     train(Args, model, train_dataloader, valid_dataloader, eval_dataloader, optimizer, scheduler, saved_state['epoch'])
