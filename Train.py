@@ -62,28 +62,27 @@ logging.basicConfig(
 
 def eval(args, model, eval_dataloader, limit=None):
     model.eval()
-    ndcg = 0
+    # ndcg = 0
     ndcg_ten = 0
     cnt = 0
     limit = len(eval_dataloader) if limit is None else limit
     logging.info('Evaluating on %d minibatches...' % limit)
     with torch.no_grad():
         for idx, sample in enumerate(eval_dataloader):
-            logits, indices, atts = model(sample['Feeds'], sample['Masks'])
+            logits, indices, atts = model(sample['Feeds'], sample['Masks'], k=1)
             # evaluation needs relevance_score related label
             scores = sample['Scores']
             golden_list = torch.sort(scores, dim=-1, descending=True)[0]
             for i in range(len(indices)):
-                model_list = torch.gather(scores[i].cuda(), 0, indices[i].squeeze(0))
-                length = torch.nonzero(golden_list[0])[-1] + 1
-                ndcg += getndcgK(model_list, golden_list[i], model_list.size(0))
+                model_list = torch.gather(scores[i].cuda(), 0, indices[i].squeeze())
+                # ndcg += getndcgK(model_list, golden_list[i], golden_list.size(0))
                 ndcg_ten += getndcgK(model_list, golden_list[i], 10)
                 cnt += 1
             if idx >= limit:
                 break
-        ndcg = ndcg / cnt
+        # ndcg = ndcg / cnt
         ndcg_ten = ndcg_ten / cnt
-        print("ndcg: ", ndcg.item())
+        # print("ndcg: ", ndcg.item())
         print("ndcg10:", ndcg_ten.item())
     model.train()
 
@@ -135,11 +134,10 @@ def train(args, model, train_dataloader, valid_dataloader, eval_dataloader, opti
             if (idx + 1) % 300 == 0:
                 train_loss = loss.cpu().detach().numpy()
                 validation(args, model, valid_dataloader, SSLloss, train_loss, idx, epoch, writer)
-            if (idx + 1) % 20 == 0:
+            if (idx + 1) % 50 == 0:
                 # for name, param in model.named_parameters():
                 #     print(name)
                 #     print(param)
-                #     import pdb; pdb.set_trace()
                 eval(args, model, eval_dataloader)
 
         if epoch < 10 and epoch % 3 == 0:

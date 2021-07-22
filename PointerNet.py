@@ -180,7 +180,8 @@ class Decoder(nn.Module):
                 decoder_input,
                 hidden,
                 context,
-                masks):
+                masks,
+                k=5):
         """
         Decoder - Forward-pass
 
@@ -238,41 +239,45 @@ class Decoder(nn.Module):
         pointers = []
         atts = []
         for idx in range(batch_size):
-            output = []
-            pointer = []
-            att = []
-            inp = decoder_input[idx].unsqueeze(0)
-            hid = (hidden[0][idx].unsqueeze(0), hidden[1][idx].unsqueeze(0))
-            length = seq_lens[idx].item()
-            cxt = context[idx][:length].unsqueeze(0)
-            msk = masks[idx][:length].unsqueeze(0)
-            # import pdb; pdb.set_trace()
-            emb = embedded_inputs.data[int(seq_idx[idx].item()) : int(seq_idx[idx + 1].item())].unsqueeze(0)
-            for _ in range(seq_lens[idx]):
-                h_t, c_t, outs, attn = step(inp, hid, cxt, msk)
-                hid = (h_t, c_t)
-                # Masking selected inputs
-                masked_outs = outs * msk
-                # Get maximum probabilities and indices
-                # max_probs, indices = masked_outs.max(1)
-                # random sampling according to probability instead of choosing max
-                indices = torch.multinomial(masked_outs, 1).view(-1)
-                # max_probs = masked_outs[0][indices]
-                one_hot_pointers = (runner[0][:length] == indices.unsqueeze(1).expand(-1, outs.size()[1])).float()
-                # Update mask to ignore seen indices
-                msk = msk * (1 - one_hot_pointers)
+            k_output = []
+            k_pointer = []
+            k_atts = []
+            for _ in range(k):
+                output = []
+                pointer = []
+                att = []
+                inp = decoder_input[idx].unsqueeze(0)
+                hid = (hidden[0][idx].unsqueeze(0), hidden[1][idx].unsqueeze(0))
+                length = seq_lens[idx].item()
+                cxt = context[idx][:length].unsqueeze(0)
+                msk = masks[idx][:length].unsqueeze(0)
+                emb = embedded_inputs.data[int(seq_idx[idx].item()) : int(seq_idx[idx + 1].item())].unsqueeze(0)
+                for _ in range(seq_lens[idx]):
+                    h_t, c_t, outs, attn = step(inp, hid, cxt, msk)
+                    hid = (h_t, c_t)
+                    # Masking selected inputs
+                    masked_outs = outs * msk
+                    # random sampling instead of choosing maximum probabilities and indices
+                    indices = torch.multinomial(masked_outs, 1).view(-1)
+                    one_hot_pointers = (runner[0][:length] == indices.unsqueeze(1).expand(-1, outs.size()[1])).float()
+                    # Update mask to ignore seen indices
+                    msk = msk * (1 - one_hot_pointers)
 
-                # Get embedded inputs by max indices
-                embedding_mask = one_hot_pointers.unsqueeze(2).expand(-1, -1, self.embedding_dim).byte()
-                inp = emb[embedding_mask.bool()].unsqueeze(0)
-                # warning: may cause problem because outs is the total softmax rather than softmax over unseened indices
-                output.append(outs)
-                att.append(attn)
-                pointer.append(indices)
-            outputs.append(torch.stack(output).permute(1, 0, 2))
-            atts.append(torch.stack(att).permute(1, 0, 2))
-            pointers.append(torch.stack(pointer).transpose(0, 1))
+                    # Get embedded inputs by max indices
+                    embedding_mask = one_hot_pointers.unsqueeze(2).expand(-1, -1, self.embedding_dim).byte()
+                    inp = emb[embedding_mask.bool()].unsqueeze(0)
+                    # warning: may cause problem because outs is the total softmax rather than softmax over unseened indices
+                    output.append(outs)
+                    att.append(attn)
+                    pointer.append(indices)
+                k_output.append(torch.stack(output).permute(1, 0, 2))
+                k_atts.append(torch.stack(att).permute(1, 0, 2))
+                k_pointer.append(torch.stack(pointer).transpose(0, 1))
+            outputs.append(torch.stack(k_output))
+            atts.append(torch.stack(k_atts))
+            pointers.append(torch.stack(k_pointer))
         assert len(outputs) == batch_size
+        assert outputs[0].size(0) == k
         # add another assert
         return (outputs, pointers), atts, hidden
 
@@ -317,7 +322,7 @@ class PointerNet(nn.Module):
         # Initialize decoder_input0
         nn.init.uniform_(self.decoder_input0, -1, 1)
 
-    def forward(self, inputs, masks, history=None):
+    def forward(self, inputs, masks, k=5, history=None):
         """
         PointerNet - Forward-pass
 
@@ -346,6 +351,7 @@ class PointerNet(nn.Module):
                                                            decoder_input0,
                                                            decoder_hidden0,
                                                            encoder_outputs,
-                                                           masks)
+                                                           masks,
+                                                           k)
 
         return  outputs, pointers, atts

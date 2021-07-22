@@ -18,30 +18,21 @@ class Seq2SlateLoss(nn.Module):
         """
         # import pdb; pdb.set_trace()
         batch_size = len(logits)
+        k = logits[0].size(0)
         label = label.to(logits[0].device)
         loss_sum = 0
+        # logits[i] [sample_num, 1, seq_len, seq_len]
         for i in range(0, batch_size):
-            inf_mask = logits[i] == 0
-            logit = logits[i]
-            # logit = torch.log(logits[i] + 0.00001)
-            # logit = torch.clamp(logit, min=-10, max=10)
-            labe = label[i]
-            length = logit.size(1)
-            seq_loss = 0
-            for j in range(length):
-                x = logit.squeeze(0)[j]
-                mask = inf_mask[0][j]
-                y = labe[:length]
-                loss = - torch.mul(torch.log(x[~mask]), y[~mask].float()).sum()
-                # c = torch.where(torch.isinf(x), torch.full_like(x, 0), x)
-                # loss2 = - torch.mul(c, y.float()).sum()
-                # loss = - torch.mul(c, y.float()).sum()
-                # if loss != loss2:
-                #     import pdb; pdb.set_trace()
-                #     print("Different loss calculated. loss={}, loss2={}".format(loss, loss2))
-                #     # assert loss == loss2, "Different loss calculated. loss={}, loss2={}".format(loss, loss2)
-                loss = loss / (y[~mask].sum() + 1/math.exp(1))
-                seq_loss = seq_loss + loss * self.weight[j]
+            # seq_len, k, seq_len
+            x = logits[i].squeeze(1).transpose(0, 1)
+            length = x.size(0)
+            w1 = self.weight[:length].view(-1, 1, 1)
+            weight = w1.expand(*x.size()).to(x.device)
+            y = label[i][:length].expand(*x.size())
+            iy = torch.mul(y, weight)
+            mask = x == 0
+            loss = - torch.mul(torch.log(x[~mask]), iy[~mask].float()).sum()
+            seq_loss = (loss / (y[~mask].sum() / k + 1/math.exp(1))) / k
             loss_sum = loss_sum + seq_loss
         loss_average = loss_sum / batch_size 
         return loss_average
