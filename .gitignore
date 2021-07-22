@@ -3,7 +3,6 @@ __pycache__/
 log
 models
 runs
-run.sh
 *.onnx
 *.npz
 collect_env.py

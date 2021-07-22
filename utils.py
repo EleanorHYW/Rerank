@@ -10,7 +10,6 @@ from torch.nn.utils.rnn import pad_sequence,pack_padded_sequence,pack_sequence,p
 import math
 import numpy as np
 from PointerNet import PointerNet
-from Data_Generator import TSPDataset
 from Seq2SlateLoss import Seq2SlateLoss
 
 def load_data(filename):

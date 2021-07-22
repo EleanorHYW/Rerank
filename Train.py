@@ -125,11 +125,6 @@ def train(args, model, train_dataloader, valid_dataloader, eval_dataloader, opti
             loss = SSLloss(logits, sample['Labels'])
             loss.backward()  # do not use retain_graph=True
             optimizer.step()
-            # if idx >= 0:
-            #     for item in model.named_parameters():
-            #         print(item[0])
-            #         print(item[1].grad)
-            # torch.nn.utils.clip_grad_value_(model.parameters(), 5)
             if (idx + 1) % 5 == 0:
                 logging.info('epoch %d, step %d, loss = %f' % (epoch, idx + 1, loss))
             if (idx + 1) % 300 == 0:
@@ -141,15 +136,17 @@ def train(args, model, train_dataloader, valid_dataloader, eval_dataloader, opti
                 #     print(param)
                 #     import pdb; pdb.set_trace()
                 eval(args, model, eval_dataloader)
+            if (idx + 1) % 1000 == 0:
+                scheduler.step()
 
-        if epoch < 10 and epoch % 3 == 0:
-            scheduler.step()  # make sure lr will not be too small
+        # if epoch < 10 and epoch % 3 == 0:
+        #     scheduler.step()  # make sure lr will not be too small
         save_state = {'state_dict': model.state_dict(),
                       'epoch': epoch + 1,
                       'lr': optimizer.param_groups[0]['lr']}
         if not os.path.exists('./models'):
             os.mkdir('./models')
-        torch.save(save_state, './models/checkpoint_%d.pt' % epoch)
+        torch.save(save_state, './models/checkpoint_base_%d.pt' % epoch)
         logging.info('Model saved in dir %s' % './models')
     writer.close()
 
@@ -226,7 +223,7 @@ def main():
                                   collate_fn=test_dataset.collater,
                                   drop_last=True)
 
-    saved_state = {'epoch': 0, 'lr': 0.001}
+    saved_state = {'epoch': 0, 'lr': 0.0003}
     if os.path.exists(Args.ckpt_file):
         saved_state = torch.load(Args.ckpt_file)
         model.load_state_dict(saved_state['state_dict'])
@@ -234,9 +231,8 @@ def main():
 
     parameters = filter(lambda p: p.requires_grad, model.parameters())
     optimizer = torch.optim.Adam(parameters, lr=saved_state['lr'])
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=100, gamma=0.1)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1000, gamma=0.96)
 
-    # import pdb; pdb.set_trace()
     train(Args, model, train_dataloader, valid_dataloader, eval_dataloader, optimizer, scheduler, saved_state['epoch'])
     eval(Args, model, eval_dataloader)
     # test(model, './models/checkpoint_0.pt', 'encoder.onnx', 'decoder.onnx')
