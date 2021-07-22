@@ -139,8 +139,6 @@ def train(args, model, train_dataloader, valid_dataloader, eval_dataloader, opti
             if (idx + 1) % 1000 == 0:
                 scheduler.step()
 
-        # if epoch < 10 and epoch % 3 == 0:
-        #     scheduler.step()  # make sure lr will not be too small
         save_state = {'state_dict': model.state_dict(),
                       'epoch': epoch + 1,
                       'lr': optimizer.param_groups[0]['lr']}
@@ -230,7 +228,8 @@ def main():
         logging.info('Load model parameters from %s' % Args.ckpt_file)
 
     parameters = filter(lambda p: p.requires_grad, model.parameters())
-    optimizer = torch.optim.Adam(parameters, lr=saved_state['lr'])
+    # weight_decay=0.001 -> L2 regularization
+    optimizer = torch.optim.Adam(parameters, lr=saved_state['lr'], weight_decay=0.001)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1000, gamma=0.96)
 
     train(Args, model, train_dataloader, valid_dataloader, eval_dataloader, optimizer, scheduler, saved_state['epoch'])

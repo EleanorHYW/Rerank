@@ -303,6 +303,7 @@ class PointerNet(nn.Module):
                                lstm_layers,
                                dropout,
                                bidir)
+        self.dropout = nn.Dropout(p=dropout)
         self.decoder = Decoder(embedding_dim, hidden_dim)
 
         # change decoder_input into history item embedding
@@ -339,6 +340,7 @@ class PointerNet(nn.Module):
         else:
             decoder_hidden0 = (encoder_hidden[0][-1],
                                encoder_hidden[1][-1])
+        encoder_outputs = self.dropout(encoder_outputs)
         (outputs, pointers), atts, decoder_hidden = self.decoder(embedded_inputs,
                                                            decoder_input0,
                                                            decoder_hidden0,
