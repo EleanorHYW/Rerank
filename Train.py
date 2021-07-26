@@ -138,7 +138,7 @@ def train(args, model, train_dataloader, valid_dataloader, eval_dataloader, opti
             if (idx + 1) % 300 == 0:
                 train_loss = loss.cpu().detach().numpy()
                 validation(args, model, valid_dataloader, SSLloss, train_loss, idx, epoch, writer)
-            if (idx + 1) % 5 == 0:
+            if (idx + 1) % 50 == 0:
                 # for name, param in model.named_parameters():
                 #     print(param)
                 eval(args, model, eval_dataloader)
