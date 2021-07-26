@@ -51,6 +51,7 @@ parser.add_argument('--n_lstms', type=int, default=2, help='Number of LSTM layer
 parser.add_argument('--dropout', type=float, default=0., help='Dropout value')
 parser.add_argument('--bidir', default=False, action='store_true', help='Bidirectional')
 parser.add_argument('--L2', default=False, action='store_true', help='L2 regularization')
+parser.add_argument('--sample', default=False, action='store_true', help='sampling while training')
 parser.add_argument('--seed', type=int, default=1, help='seed')
 parser.add_argument('--ckpt_file', type=str, default='checkpoint_0.pkl')
 
@@ -70,7 +71,7 @@ def eval(args, model, eval_dataloader, limit=None):
     logging.info('Evaluating on %d minibatches...' % limit)
     with torch.no_grad():
         for idx, sample in enumerate(eval_dataloader):
-            logits, indices, atts = model(sample['Feeds'], sample['Masks'])
+            logits, indices, atts = model(sample['Feeds'], sample['Masks'], sampling=False)
             # evaluation needs relevance_score related label
             scores = sample['Scores']
             golden_list = torch.sort(scores, dim=-1, descending=True)[0]
@@ -94,7 +95,7 @@ def validation(args, model, valid_dataloader, SSLloss, train_loss, idxa, epoch, 
     cnt = len(valid_dataloader)
     for idx, sample in enumerate(valid_dataloader):
         with torch.no_grad():
-            logits, indices, atts = model(sample['Feeds'], sample['Masks'])
+            logits, indices, atts = model(sample['Feeds'], sample['Masks'], sampling=False)
             loss = SSLloss(logits, sample['Labels'])
             valid_loss += loss
     logging.info('During validation, %d in %d batches loss is nan' % (len(valid_dataloader) - cnt, len(valid_dataloader)))
@@ -112,6 +113,10 @@ def validation(args, model, valid_dataloader, SSLloss, train_loss, idxa, epoch, 
 def train(args, model, train_dataloader, valid_dataloader, eval_dataloader, optimizer, scheduler, start_epoch=0):
     logging.info("Start to train with lr=%f..." % optimizer.param_groups[0]['lr'])
 
+    sampling = False
+    if args.sample:
+        sampling = True
+
     model.train()
     for epoch in range(start_epoch, args.n_epochs):
         if os.path.isdir('runs/epoch%d' % epoch):
@@ -124,7 +129,7 @@ def train(args, model, train_dataloader, valid_dataloader, eval_dataloader, opti
         for idx, sample in enumerate(train_dataloader):
             optimizer.zero_grad()
             SSLloss = Seq2SlateLoss(args.max_len)
-            logits, indices, atts = model(sample['Feeds'], sample['Masks'])
+            logits, indices, atts = model(sample['Feeds'], sample['Masks'], sampling=sampling)
             loss = SSLloss(logits, sample['Labels'])
             loss.backward()  # do not use retain_graph=True
             optimizer.step()
@@ -133,11 +138,9 @@ def train(args, model, train_dataloader, valid_dataloader, eval_dataloader, opti
             if (idx + 1) % 300 == 0:
                 train_loss = loss.cpu().detach().numpy()
                 validation(args, model, valid_dataloader, SSLloss, train_loss, idx, epoch, writer)
-            if (idx + 1) % 20 == 0:
+            if (idx + 1) % 5 == 0:
                 # for name, param in model.named_parameters():
-                #     print(name)
                 #     print(param)
-                #     import pdb; pdb.set_trace()
                 eval(args, model, eval_dataloader)
             if (idx + 1) % 1000 == 0:
                 scheduler.step()
@@ -147,8 +150,8 @@ def train(args, model, train_dataloader, valid_dataloader, eval_dataloader, opti
                       'lr': optimizer.param_groups[0]['lr']}
         if not os.path.exists('./models'):
             os.mkdir('./models')
-        torch.save(save_state, './models/base_bsz_{}_h_{}_dp_{}_L2_{}_ckp_{}.pt'.format(args.batch_size, args.hiddens, args.dropout, int(args.L2), epoch))
-        logging.info('Model saved in dir ./models/base_bsz_{}_h_{}_dp_{}_L2_{}_ckp_{}.pt'.format(args.batch_size, args.hiddens, args.dropout, int(args.L2), epoch))
+        torch.save(save_state, './models/base_bsz_{}_h_{}_dp_{}_L2_{}_sp_{}_ckp_{}.pt'.format(args.batch_size, args.hiddens, args.dropout, int(args.L2), int(args.sample), epoch))
+        logging.info('Model saved in dir ./models/base_bsz_{}_h_{}_dp_{}_L2_{}_sp_{}_ckp_{}.pt'.format(args.batch_size, args.hiddens, args.dropout, int(args.L2), int(args.sample), epoch))
     writer.close()
 
 def main():

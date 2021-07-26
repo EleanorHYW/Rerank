@@ -180,7 +180,8 @@ class Decoder(nn.Module):
                 decoder_input,
                 hidden,
                 context,
-                masks):
+                masks,
+                sampling=False):
         """
         Decoder - Forward-pass
 
@@ -253,8 +254,13 @@ class Decoder(nn.Module):
                 hid = (h_t, c_t)
                 # Masking selected inputs
                 masked_outs = outs * msk
-                # Get maximum probabilities and indices
-                max_probs, indices = masked_outs.max(1)
+                # max_probs, indices = masked_outs.max(1)
+                # random sampling according to probability instead of choosing max
+                if sampling:
+                    indices = torch.multinomial(masked_outs, 1).view(-1)
+                else:
+                    _, indices = masked_outs.max(1)
+                # max_probs = masked_outs[0][indices]
                 one_hot_pointers = (runner[0][:length] == indices.unsqueeze(1).expand(-1, outs.size()[1])).float()
                 # Update mask to ignore seen indices
                 msk = msk * (1 - one_hot_pointers)
@@ -315,12 +321,12 @@ class PointerNet(nn.Module):
         # Initialize decoder_input0
         nn.init.uniform_(self.decoder_input0, -1, 1)
 
-    def forward(self, inputs, masks, history=None):
+    def forward(self, inputs, masks, sampling=False):
         """
         PointerNet - Forward-pass
 
         :param Tensor inputs: Input sequence
-        :param Tensor history: History sequence
+        # :param Tensor history: History sequence
         :return: Pointers probabilities and indices
         """
         batch_size = inputs.batch_sizes[0]
@@ -345,6 +351,7 @@ class PointerNet(nn.Module):
                                                            decoder_input0,
                                                            decoder_hidden0,
                                                            encoder_outputs,
-                                                           masks)
+                                                           masks,
+                                                           sampling=False)
 
         return  outputs, pointers, atts
