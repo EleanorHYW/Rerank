@@ -7,18 +7,8 @@ def getdcg(scores):
     return np.divide(np.power(2, scores) - 1, np.log2(np.arange(scores.shape[0], dtype=np.float32) + 2)).sum()
 
 def getndcgK(model_list, golden_list, K):
-    """
-    calculate ndcg
-
-    :param Tensor score_list: the scores of items produced by model
-    :param Tensor item_list: true item list that the usr interact with
-    :return: ndcg score
-    """
     model_list = model_list[:K].cpu()
     golden_list = golden_list[:K]
-    # relevant = np.ones_like(golden_list)
-    # it2rel = {it: rel for it, rel in zip(golden_list, relevant)}
-    # rank_scores = np.asarray([it2rel.get(it, 0.0) for it in model_list], dtype=np.float32)
 
     idcg = getdcg(golden_list)
     dcg = getdcg(model_list)
@@ -28,15 +18,6 @@ def getndcgK(model_list, golden_list, K):
     return dcg / idcg
 
 def getapk(actual, predicted, k=10):
-    """
-    Computes the average precision at k.
-    This function computes the average prescision at k between two lists of
-    items.
-    :param list actual: A list of elements that are to be predicted (order doesn't matter)
-    :param list predicted : A list of predicted elements (order does matter)
-    :param int k: The maximum number of predicted elements, optional
-    :return double score: The average precision at k over the input lists
-    """
     if len(predicted) > k:
         predicted = predicted[:k]
 
@@ -54,15 +35,6 @@ def getapk(actual, predicted, k=10):
     return score / min(len(actual), k)
 
 def getmapk(actual, predicted, k=10):
-    """
-    Computes the mean average precision at k.
-    This function computes the mean average prescision at k between two lists
-    of lists of items.
-    :param list actual: A list of lists of elements that are to be predicted (order doesn't matter in the lists)
-    :param list predicted : A list of lists of predicted elements (order does matter in the lists)
-    :param int k: The maximum number of predicted elements, optional
-    :return double score: The mean average precision at k over the input lists
-    """
     return np.mean([getapk(a, p, k) for a, p in zip(actual, predicted)])
 
 def tied_rank(x):

@@ -139,12 +139,14 @@ def train(args, model, train_dataloader, valid_dataloader, eval_dataloader, opti
                 train_loss = loss.cpu().detach().numpy()
                 validation(args, model, valid_dataloader, SSLloss, train_loss, idx, epoch, writer)
             if (idx + 1) % 50 == 0:
-                # for name, param in model.named_parameters():
-                #     print(param)
                 eval(args, model, eval_dataloader)
-            if (idx + 1) % 1000 == 0:
-                scheduler.step()
+            # if epoch % 2 == 0:
+            #     # if total_step % 1000 == 0:
+            #     scheduler.step()
+        
+        scheduler.step()
 
+        eval(args, model, eval_dataloader)
         save_state = {'state_dict': model.state_dict(),
                       'epoch': epoch + 1,
                       'lr': optimizer.param_groups[0]['lr']}

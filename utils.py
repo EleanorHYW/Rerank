@@ -117,23 +117,6 @@ def random_split(dataset, lengths):
     split_list = [indices[offset - length : offset] for offset, length in zip(_accumulate(lengths), lengths)]
     return split_list
 
-class BatchManager:
-    def __init__(self, data, batch_size):
-        self.steps = int(len(data) / batch_size)
-        # comment following two lines to neglect the last batch
-        if self.steps * batch_size < len(data):
-            self.steps += 1
-        self.data = data
-        self.batch_size = batch_size
-        self.bid = 0
-
-    def next_batch(self):
-        stncs = list(self.data[self.bid * self.batch_size: (self.bid + 1) * self.batch_size])
-        self.bid += 1
-        if self.bid == self.steps:
-            self.bid = 0
-        return stncs
-
 def load_embedding(item2emb, item_lists):
     embeddings = []
     for item_list in item_lists:
